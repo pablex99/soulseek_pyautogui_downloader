@@ -269,43 +269,66 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
             else:
                 cajas_canciones = []
 
-            # Buscar la mejor caja SOLO entre las de la columna de canciones
-            caja_mejor = None
+            # Buscar todas las cajas OCR que forman parte del nombre de la mejor opción (similitud alta)
             from difflib import SequenceMatcher
-            mejor_score = 0
+            cajas_mejor_opcion = []
             for caja in cajas_canciones:
                 texto_caja = limpiar_opcion(caja['text'])
                 score = SequenceMatcher(None, texto_caja, mejor_opcion).ratio()
-                if score > mejor_score:
-                    mejor_score = score
-                    caja_mejor = caja
-            # Si la mejor caja encontrada tiene muy baja similitud (<0.6), considerar que no hay caja confiable
-            if caja_mejor and mejor_score < 0.6:
-                caja_mejor = None
-            if caja_mejor:
-                # Dibuja rectángulo rojo sobre la caja de la mejor opción
-                pt1 = (caja_mejor['left'], caja_mejor['top'])
-                pt2 = (caja_mejor['left'] + caja_mejor['width'], caja_mejor['top'] + caja_mejor['height'])
-                cv2.rectangle(debug_img, pt1, pt2, (0,0,255), 2)  # rojo
-                # Dibuja círculo azul en el punto de clic
-                x_click_rel = caja_mejor['left'] + caja_mejor['width'] // 2
-                y_click_rel = caja_mejor['top'] + caja_mejor['height'] // 2
-                cv2.circle(debug_img, (x_click_rel, y_click_rel), 8, (255,0,0), -1)  # azul
-                # También dibuja el punto azul en la imagen de todas las cajas
-                cv2.circle(debug_img_all, (x_click_rel, y_click_rel), 8, (255,0,0), -1)  # azul
-                debug_clic_info = f"[DEBUG] Clic en caja OCR: ({x_click_rel},{y_click_rel}) abs=({x0 + x_click_rel},{y0 + y_click_rel}) texto='{caja_mejor['text']}'"
-                cv2.imwrite(f"debug_opcion_{idx+1}.png", debug_img)
-                cv2.imwrite(f"debug_opcion_all_{idx+1}.png", debug_img_all)
-                # Registrar en el log las coordenadas y método
-                with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
-                    flog.write(debug_clic_info + '\n')
-                x_click = x0 + caja_mejor['left'] + caja_mejor['width'] // 2
-                y_click = y0 + caja_mejor['top'] + caja_mejor['height'] // 2
-                print(f"Descargando la mejor opción encontrada: {mejor_opcion}")
-                pyautogui.doubleClick(x_click, y_click)
-                time.sleep(1)
+                if score >= 0.6:
+                    cajas_mejor_opcion.append(caja)
+
+            if cajas_mejor_opcion:
+                # Calcular el centro vertical de cada caja
+                y_centros = [caja['top'] + caja['height']//2 for caja in cajas_mejor_opcion]
+                # Calcular promedio y desviación estándar
+                y_prom = np.mean(y_centros)
+                y_std = np.std(y_centros)
+                # Filtrar outliers: solo considerar cajas cuyo centro esté a menos de 1.2 desviaciones estándar del promedio
+                cajas_filtradas = [caja for caja, y in zip(cajas_mejor_opcion, y_centros) if abs(y - y_prom) <= max(8, 1.2*y_std)]
+                if cajas_filtradas:
+                    y_centros_filtrados = [caja['top'] + caja['height']//2 for caja in cajas_filtradas]
+                    x_centros_filtrados = [caja['left'] + caja['width']//2 for caja in cajas_filtradas]
+                    y_click_rel = int(np.mean(y_centros_filtrados))
+                    x_click_rel = int(np.mean(x_centros_filtrados))
+                    # Dibuja rectángulo verde sobre el bounding box filtrado
+                    min_top = min(caja['top'] for caja in cajas_filtradas)
+                    max_bottom = max(caja['top'] + caja['height'] for caja in cajas_filtradas)
+                    min_left = min(caja['left'] for caja in cajas_filtradas)
+                    max_right = max(caja['left'] + caja['width'] for caja in cajas_filtradas)
+                    cv2.rectangle(debug_img, (min_left, min_top), (max_right, max_bottom), (0,255,0), 2)
+                    cv2.rectangle(debug_img_all, (min_left, min_top), (max_right, max_bottom), (0,255,0), 2)
+                    # Dibuja círculo azul en el punto de clic
+                    cv2.circle(debug_img, (x_click_rel, y_click_rel), 8, (255,0,0), -1)
+                    cv2.circle(debug_img_all, (x_click_rel, y_click_rel), 8, (255,0,0), -1)
+                    debug_clic_info = f"[DEBUG] Clic en bounding box mejor opción (sin outliers): ({x_click_rel},{y_click_rel}) abs=({x0 + x_click_rel},{y0 + y_click_rel}) texto='{mejor_opcion}'"
+                    cv2.imwrite(f"debug_opcion_{idx+1}.png", debug_img)
+                    cv2.imwrite(f"debug_opcion_all_{idx+1}.png", debug_img_all)
+                    with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
+                        flog.write(debug_clic_info + '\n')
+                    x_click = x0 + x_click_rel
+                    y_click = y0 + y_click_rel
+                    print(f"Descargando la mejor opción encontrada: {mejor_opcion}")
+                    pyautogui.doubleClick(x_click, y_click)
+                    time.sleep(1)
+                else:
+                    # Si todas las cajas fueron descartadas como outliers, usar el promedio de todas
+                    y_click_rel = int(y_prom)
+                    x_click_rel = int(np.mean([caja['left'] + caja['width']//2 for caja in cajas_mejor_opcion]))
+                    cv2.circle(debug_img, (x_click_rel, y_click_rel), 8, (0,0,255), -1)
+                    cv2.circle(debug_img_all, (x_click_rel, y_click_rel), 8, (0,0,255), -1)
+                    debug_clic_info = f"[DEBUG] Clic en promedio (todas outliers): ({x_click_rel},{y_click_rel}) abs=({x0 + x_click_rel},{y0 + y_click_rel}) texto='{mejor_opcion}'"
+                    cv2.imwrite(f"debug_opcion_{idx+1}.png", debug_img)
+                    cv2.imwrite(f"debug_opcion_all_{idx+1}.png", debug_img_all)
+                    with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
+                        flog.write(debug_clic_info + '\n')
+                    x_click = x0 + x_click_rel
+                    y_click = y0 + y_click_rel
+                    print(f"Descargando la mejor opción encontrada: {mejor_opcion}")
+                    pyautogui.doubleClick(x_click, y_click)
+                    time.sleep(1)
             else:
-                # Fallback: buscar la mejor opción entre las líneas limpias nuevamente
+                # Fallback: buscar la mejor opción entre las líneas limpias nuevamente SOLO si no hay ninguna caja con score aceptable
                 idx_mejor = None
                 for i, op in enumerate(opciones_limpias):
                     if op == mejor_opcion:
@@ -333,8 +356,6 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
                     print(f"Descargando la mejor opción encontrada (fallback): {mejor_opcion}")
                     pyautogui.doubleClick(x_centro, y_mejor)
                     time.sleep(1)
-                else:
-                    print(f"No se pudo encontrar la mejor opción para descargar: {mejor_opcion}")
         else:
             print("No se detectaron opciones para descargar en esta búsqueda.")
 
