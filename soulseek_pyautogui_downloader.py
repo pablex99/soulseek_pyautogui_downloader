@@ -158,7 +158,13 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
             if lineas_opciones:
                 # Herramienta de debugging: imagen con marcas
                 debug_img = cv2.cvtColor(np.array(screenshot_opciones), cv2.COLOR_RGB2BGR).copy()
+                debug_img_all = debug_img.copy()  # Imagen para mostrar todas las cajas OCR
                 debug_clic_info = None
+                # Dibuja todas las cajas OCR detectadas en debug_img_all
+                for caja in cajas_lineas:
+                    pt1 = (caja['left'], caja['top'])
+                    pt2 = (caja['left'] + caja['width'], caja['top'] + caja['height'])
+                    cv2.rectangle(debug_img_all, pt1, pt2, (0,0,255), 2)  # rojo
                 # Eliminar '.mp3' solo si está al final de cada opción antes de mostrar y comparar
                 def limpiar_opcion(op):
                     op = op.strip()
@@ -245,13 +251,30 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
                     score = matches * 3 - extras
                     return score
                 mejor_opcion = max(opciones_limpias, key=score_opcion)
-            # Buscar nuevamente entre las posibles opciones (cajas OCR) la mejor opción definida
+            # Mejorar: filtrar solo cajas en la zona de canciones (donde hay varias alineadas verticalmente)
+            # 1. Agrupar cajas por eje X (columna) para encontrar la columna con más cajas (zona de canciones)
+            if cajas_lineas:
+                from collections import Counter
+                # Considerar el centro X de cada caja
+                centros_x = [caja['left'] + caja['width']//2 for caja in cajas_lineas]
+                # Agrupar por bins de 40px para tolerancia de alineación
+                bins = [((x//40)*40) for x in centros_x]
+                bin_counts = Counter(bins)
+                if bin_counts:
+                    columna_canciones = bin_counts.most_common(1)[0][0]
+                    # Filtrar solo cajas en esa columna (±25px de tolerancia)
+                    cajas_canciones = [caja for caja in cajas_lineas if abs((caja['left'] + caja['width']//2) - columna_canciones) <= 25]
+                else:
+                    cajas_canciones = cajas_lineas
+            else:
+                cajas_canciones = []
+
+            # Buscar la mejor caja SOLO entre las de la columna de canciones
             caja_mejor = None
             from difflib import SequenceMatcher
             mejor_score = 0
-            for caja in cajas_lineas:
+            for caja in cajas_canciones:
                 texto_caja = limpiar_opcion(caja['text'])
-                # Similitud entre textos normalizados
                 score = SequenceMatcher(None, texto_caja, mejor_opcion).ratio()
                 if score > mejor_score:
                     mejor_score = score
@@ -268,8 +291,11 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
                 x_click_rel = caja_mejor['left'] + caja_mejor['width'] // 2
                 y_click_rel = caja_mejor['top'] + caja_mejor['height'] // 2
                 cv2.circle(debug_img, (x_click_rel, y_click_rel), 8, (255,0,0), -1)  # azul
+                # También dibuja el punto azul en la imagen de todas las cajas
+                cv2.circle(debug_img_all, (x_click_rel, y_click_rel), 8, (255,0,0), -1)  # azul
                 debug_clic_info = f"[DEBUG] Clic en caja OCR: ({x_click_rel},{y_click_rel}) abs=({x0 + x_click_rel},{y0 + y_click_rel}) texto='{caja_mejor['text']}'"
                 cv2.imwrite(f"debug_opcion_{idx+1}.png", debug_img)
+                cv2.imwrite(f"debug_opcion_all_{idx+1}.png", debug_img_all)
                 # Registrar en el log las coordenadas y método
                 with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
                     flog.write(debug_clic_info + '\n')
@@ -289,13 +315,16 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
                     alto_opcion = 32
                     y_mejor_rel = idx_mejor * alto_opcion
                     x_centro_rel = ancho // 2
-                    # Dibuja rectángulo rojo estimado sobre la opción
+                    # Dibuja rectángulo rojo estimado sobre la opción en ambas imágenes
                     pt1 = (0, y_mejor_rel)
                     pt2 = (ancho, y_mejor_rel + alto_opcion)
                     cv2.rectangle(debug_img, pt1, pt2, (0,0,255), 2)  # rojo
-                    # Dibuja círculo azul en el punto de clic estimado
+                    cv2.rectangle(debug_img_all, pt1, pt2, (0,0,255), 2)  # rojo
+                    # Dibuja círculo azul en el punto de clic estimado en ambas imágenes
                     cv2.circle(debug_img, (x_centro_rel, y_mejor_rel + alto_opcion // 2), 8, (255,0,0), -1)  # azul
+                    cv2.circle(debug_img_all, (x_centro_rel, y_mejor_rel + alto_opcion // 2), 8, (255,0,0), -1)  # azul
                     cv2.imwrite(f"debug_opcion_{idx+1}.png", debug_img)
+                    cv2.imwrite(f"debug_opcion_all_{idx+1}.png", debug_img_all)
                     debug_clic_info = f"[DEBUG] Clic fallback: ({x_centro_rel},{y_mejor_rel + alto_opcion // 2}) abs=({x0 + x_centro_rel},{y0 + y_mejor_rel + alto_opcion // 2}) texto='{mejor_opcion}'"
                     with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
                         flog.write(debug_clic_info + ' (fallback)\n')
