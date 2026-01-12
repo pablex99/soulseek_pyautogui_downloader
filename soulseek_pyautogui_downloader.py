@@ -136,73 +136,71 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
         import pytesseract
         import cv2
         import numpy as np
-        img = cv2.cvtColor(np.array(screenshot_opciones), cv2.COLOR_RGB2BGR)
-        texto_opciones = pytesseract.image_to_string(img)
-        lineas_opciones = [linea.strip() for linea in texto_opciones.splitlines() if linea.strip()]
-        # Obtener cajas de texto de cada línea detectada
-        ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-        cajas_lineas = []
-        for i in range(len(ocr_data['level'])):
-            if ocr_data['text'][i].strip():
-                cajas_lineas.append({
-                    'text': ocr_data['text'][i].strip(),
-                    'left': ocr_data['left'][i],
-                    'top': ocr_data['top'][i],
-                    'width': ocr_data['width'][i],
-                    'height': ocr_data['height'][i]
-                })
+        def obtener_opciones_y_cajas(screenshot_img):
+            img = cv2.cvtColor(np.array(screenshot_img), cv2.COLOR_RGB2BGR)
+            texto_opciones = pytesseract.image_to_string(img)
+            lineas_opciones = [linea.strip() for linea in texto_opciones.splitlines() if linea.strip()]
+            ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            cajas_lineas = []
+            for i in range(len(ocr_data['level'])):
+                if ocr_data['text'][i].strip():
+                    cajas_lineas.append({
+                        'text': ocr_data['text'][i].strip(),
+                        'left': ocr_data['left'][i],
+                        'top': ocr_data['top'][i],
+                        'width': ocr_data['width'][i],
+                        'height': ocr_data['height'][i]
+                    })
+            return lineas_opciones, cajas_lineas, img
+
+        lineas_opciones, cajas_lineas, img = obtener_opciones_y_cajas(screenshot_opciones)
 
         # Guardar log de opciones y la opción más parecida a la búsqueda (sin '320')
         with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
             flog.write(f"\n--- Opciones para búsqueda: {busqueda} ---\n")
             if lineas_opciones:
                 # Herramienta de debugging: imagen con marcas
-                debug_img = cv2.cvtColor(np.array(screenshot_opciones), cv2.COLOR_RGB2BGR).copy()
-                debug_img_all = debug_img.copy()  # Imagen para mostrar todas las cajas OCR
+                debug_img = img.copy()
+                debug_img_all = img.copy()
                 debug_clic_info = None
-                # Dibuja todas las cajas OCR detectadas en debug_img_all
                 for caja in cajas_lineas:
                     pt1 = (caja['left'], caja['top'])
                     pt2 = (caja['left'] + caja['width'], caja['top'] + caja['height'])
-                    cv2.rectangle(debug_img_all, pt1, pt2, (0,0,255), 2)  # rojo
-                # Eliminar '.mp3' solo si está al final de cada opción antes de mostrar y comparar
+                    cv2.rectangle(debug_img_all, pt1, pt2, (0,0,255), 2)
                 def limpiar_opcion(op):
                     op = op.strip()
-                    # Eliminar '.mp3' solo si está al final
                     if op.lower().endswith('.mp3'):
                         op = op[:-4].strip()
-                    # Eliminar símbolos de puntuación comunes
                     op = re.sub(r'[.,;]', '', op)
                     return op
                 opciones_limpias = [limpiar_opcion(opcion) for opcion in lineas_opciones]
-                # Mostrar solo las opciones limpias en el log
                 for op in opciones_limpias:
                     flog.write(op + '\n')
-
-                # Buscar la opción más parecida a la búsqueda (sin '320' ni 'mp3'), ignorando números y símbolos
                 def normalizar_texto(texto):
-                    # Eliminar números y símbolos, excepto letras y espacios
                     return re.sub(r'[^a-záéíóúüñ ]', '', texto.lower())
-
                 busqueda_sin_320_mp3 = busqueda.replace('320', '').replace('mp3', '').strip()
                 palabras_busqueda = [w for w in normalizar_texto(busqueda_sin_320_mp3).split() if w != '']
                 palabras_busqueda_set = set(palabras_busqueda)
-
-                # Prioridad máxima: opciones que contienen todas las palabras de la búsqueda y no tienen palabras extra
+                # Refinado: máxima prioridad a coincidencia exacta de palabras (sin mp3/320),
+                # luego a las que tengan todas las palabras y menos extras, y por último score aproximado
                 mejor_opcion = None
+                mejor_opcion_extras = None
+                min_extras = None
                 for op in opciones_limpias:
                     palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
-                    if set(palabras_opcion) == palabras_busqueda_set:
+                    if set(palabras_opcion) == palabras_busqueda_set and len(palabras_opcion) == len(palabras_busqueda):
                         mejor_opcion = op
                         break
-                # Si no hay coincidencia exacta, buscar la que contenga todas las palabras (sin importar extras)
                 if not mejor_opcion:
                     for op in opciones_limpias:
                         palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
                         if palabras_busqueda_set.issubset(set(palabras_opcion)):
-                            mejor_opcion = op
-                            break
-                # Si aún no hay, usar el score aproximado
+                            extras = len(palabras_opcion) - len(palabras_busqueda)
+                            if min_extras is None or extras < min_extras:
+                                mejor_opcion_extras = op
+                                min_extras = extras
+                    if mejor_opcion_extras:
+                        mejor_opcion = mejor_opcion_extras
                 if not mejor_opcion:
                     def score_opcion(op):
                         palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
@@ -211,12 +209,73 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
                         score = matches * 3 - extras
                         return score
                     mejor_opcion = max(opciones_limpias, key=score_opcion)
-                flog.write(f"[Mejor coincidencia sin '320' y 'mp3']: {mejor_opcion}\n")
+                flog.write(f"[Mejor coincidencia refinada]: {mejor_opcion}\n")
             else:
                 flog.write("[ADVERTENCIA] No se detectaron opciones por OCR. Revisa la imagen soulseek_opciones_{idx+1}.png para depurar la región capturada.\n")
 
         # Descargar la mejor opción encontrada por el algoritmo
         if lineas_opciones:
+            # --- NUEVO: Antes de hacer clic, volver a tomar screenshot y OCR, y verificar si la mejor opción sigue presente ---
+            try:
+                pyautogui.moveTo(barra_busqueda)  # Mueve el mouse fuera de la zona de opciones para evitar hover
+                time.sleep(0.5)
+            except pyautogui.FailSafeException:
+                print("[ADVERTENCIA] PyAutoGUI fail-safe activado: el mouse se movió a una esquina de la pantalla. Se omite esta canción y se continúa con la siguiente.")
+                continue
+            screenshot_opciones2 = pyautogui.screenshot(region=(x0, y0, ancho, alto))
+            lineas_opciones2, cajas_lineas2, img2 = obtener_opciones_y_cajas(screenshot_opciones2)
+            opciones_limpias2 = [re.sub(r'[.,;]', '', op.strip()[:-4].strip()) if op.strip().lower().endswith('.mp3') else re.sub(r'[.,;]', '', op.strip()) for op in lineas_opciones2]
+            def normalizar_texto(texto):
+                return re.sub(r'[^a-záéíóúüñ ]', '', texto.lower())
+            palabras_busqueda = [w for w in normalizar_texto(busqueda.replace('320', '').replace('mp3', '').strip()).split() if w != '']
+            palabras_busqueda_set = set(palabras_busqueda)
+            # ¿Sigue la mejor opción?
+            mejor_opcion_presente = False
+            for op in opciones_limpias2:
+                palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
+                if set(palabras_opcion) == palabras_busqueda_set and len(palabras_opcion) == len(palabras_busqueda):
+                    if op == mejor_opcion:
+                        mejor_opcion_presente = True
+                        break
+            if not mejor_opcion_presente:
+                # Recalcular mejor opción con las nuevas opciones y registrar en el log
+                with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
+                    flog.write(f"\n[Repetición de proceso: nuevas opciones detectadas tras refresco OCR]\n")
+                    for op in opciones_limpias2:
+                        flog.write(op + '\n')
+                mejor_opcion = None
+                mejor_opcion_extras = None
+                min_extras = None
+                for op in opciones_limpias2:
+                    palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
+                    if set(palabras_opcion) == palabras_busqueda_set and len(palabras_opcion) == len(palabras_busqueda):
+                        mejor_opcion = op
+                        break
+                if not mejor_opcion:
+                    for op in opciones_limpias2:
+                        palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
+                        if palabras_busqueda_set.issubset(set(palabras_opcion)):
+                            extras = len(palabras_opcion) - len(palabras_busqueda)
+                            if min_extras is None or extras < min_extras:
+                                mejor_opcion_extras = op
+                                min_extras = extras
+                    if mejor_opcion_extras:
+                        mejor_opcion = mejor_opcion_extras
+                if not mejor_opcion:
+                    def score_opcion(op):
+                        palabras_opcion = [w for w in normalizar_texto(op).split() if w != '']
+                        matches = sum(1 for palabra in palabras_busqueda if palabra in palabras_opcion)
+                        extras = max(0, len(palabras_opcion) - len(palabras_busqueda))
+                        score = matches * 3 - extras
+                        return score
+                    if opciones_limpias2:
+                        mejor_opcion = max(opciones_limpias2, key=score_opcion)
+                with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
+                    flog.write(f"[Nueva mejor opción tras repetición]: {mejor_opcion}\n")
+                # Actualizar cajas_lineas y debug_img para el nuevo set
+                cajas_lineas = cajas_lineas2
+                debug_img = img2.copy()
+                debug_img_all = img2.copy()
             # Usar el mismo algoritmo de coincidencia para encontrar la mejor opción
             # import re ya está al inicio del script
             def limpiar_opcion(op):
@@ -359,38 +418,82 @@ def automatizar(canciones, barra_busqueda, seccion_descargas, seccion_buscar, pr
         else:
             print("No se detectaron opciones para descargar en esta búsqueda.")
 
-    # Al terminar todas las búsquedas, tomar screenshot de la sección de descargas
+    # Al terminar todas las búsquedas, tomar screenshot de la sección de descargas (pantalla completa), aplicar OCR y marcar coincidencias
     print("\nAnalizando sección de descargas con OCR...")
     pyautogui.click(seccion_descargas)
     time.sleep(2)
-    screenshot = pyautogui.screenshot(region=(seccion_descargas.x-100, seccion_descargas.y, 1200, 700))
+
+    screenshot = pyautogui.screenshot()  # Pantalla completa
     screenshot.save("descargas_soulseek.png")
     img = cv2.cvtColor(cv2.imread("descargas_soulseek.png"), cv2.COLOR_BGR2RGB)
-    texto_ocr = pytesseract.image_to_string(img)
+    img_analisis = img.copy()
+
+    # Definir el área de descargas (rectángulo verde)
+    descargas_x = seccion_descargas.x
+    descargas_y = seccion_descargas.y
+    rect_width = 900
+    rect_height = 500
+    img_h, img_w = img_analisis.shape[:2]
+    # Ajuste: límite izquierdo 2px más a la izquierda, derecho 5px más a la derecha
+    rect_left = max(0, descargas_x - 2)
+    rect_top = max(0, descargas_y + 100)
+    rect_right = min(img_w, rect_left + rect_width + 520)
+    rect_bottom = min(img_h, rect_top + rect_height + 260)
+
+
+    # Recortar el área de descargas para el análisis OCR
+    area_descargas = img[rect_top:rect_bottom, rect_left:rect_right]
+    texto_ocr = pytesseract.image_to_string(area_descargas)
     texto_ocr = texto_ocr.lower()
+    ocr_data = pytesseract.image_to_data(area_descargas, output_type=pytesseract.Output.DICT)
 
-    # Asociar búsquedas a texto detectado (refinado: buscar nombre de canción como substring ignorando símbolos)
-
+    # Asociar búsquedas a texto detectado (buscar nombre de canción como substring ignorando símbolos)
     lineas_ocr = [linea.strip() for linea in texto_ocr.splitlines() if linea.strip()]
     lineas_ocr_norm = [normalizar(linea) for linea in lineas_ocr]
 
-    for cancion, autor in canciones:
+    # Mejorar: buscar coincidencias con mayor robustez (similitud >= 0.8 o substring)
+    from difflib import SequenceMatcher
+    coincidencias_cajas = []
+    for idx_cancion, (cancion, autor) in enumerate(canciones):
         cancion_norm = normalizar(cancion)
         busqueda = f"{cancion} {autor}"
         coincidencias = []
         for i, linea_norm in enumerate(lineas_ocr_norm):
-            if cancion_norm and cancion_norm in linea_norm:
-                coincidencias.append((lineas_ocr[i], 1.0))
+            # Coincidencia robusta: substring o similitud alta
+            sim = SequenceMatcher(None, cancion_norm, linea_norm).ratio()
+            if (cancion_norm and cancion_norm in linea_norm) or sim >= 0.8:
+                coincidencias.append((lineas_ocr[i], sim, i))
         if coincidencias:
-            for match, score in coincidencias:
-                descargadas.append((busqueda, match))
-                print(f"Descargada: {match} ← búsqueda: {busqueda} (match por nombre de canción)")
+            # Elegir la coincidencia con mayor similitud
+            best_match = max(coincidencias, key=lambda x: x[1])
+            match, score, i = best_match
+            descargadas.append((busqueda, match))
+            print(f"Descargada: {match} ← búsqueda: {busqueda} (match por nombre de canción, score={score:.2f})")
+            # Buscar la caja OCR correspondiente a la línea
+            for j in range(len(ocr_data['text'])):
+                if ocr_data['text'][j].strip() and ocr_data['text'][j].strip().lower() in match.lower():
+                    (left, top, width, height) = (ocr_data['left'][j], ocr_data['top'][j], ocr_data['width'][j], ocr_data['height'][j])
+                    # Ajustar coordenadas al área de descargas
+                    coincidencias_cajas.append((left + rect_left, top + rect_top, width, height, match))
         else:
             no_descargadas.append(busqueda)
             print(f"No detectada en OCR: {busqueda}")
 
-    # (Eliminado: Mostrar el screenshot al usuario al final)
-    return descargadas, no_descargadas
+    # Dibujar borde verde del área de descargas
+    cv2.rectangle(img_analisis, (rect_left, rect_top), (rect_right, rect_bottom), (0,255,0), 3)
+    # Dibujar cajas rojas sobre coincidencias
+    for left, top, width, height, match in coincidencias_cajas:
+        cv2.rectangle(img_analisis, (left, top), (left+width, top+height), (0,0,255), 2)
+    cv2.imwrite("analisis_descargas.png", cv2.cvtColor(img_analisis, cv2.COLOR_RGB2BGR))
+
+    # Guardar detalles de canciones procesadas al final del log
+    with open('soulseek_opciones_log.txt', 'a', encoding='utf-8') as flog:
+        flog.write("\n--- Detalles de canciones procesadas ---\n")
+        for busqueda, archivo in descargadas:
+            flog.write(f"Descargada: {archivo} ← búsqueda: {busqueda}\n")
+        for c in no_descargadas:
+            flog.write(f"No descargada: {c}\n")
+
     return descargadas, no_descargadas
 
 # 5. Main
